@@ -74,7 +74,7 @@ jobs:
         name: Run  sync
         if: ${{ github.event_name != 'schedule' || steps.nytime.outputs.hour == '11' }}
         env:
-          _TOKEN:        ${{ secrets._TOKEN }}
+          NOTION_TOKEN:        ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID:  ${{ secrets.NOTION_DATABASE_ID }}
           SUPABASE_HOST:       ${{ secrets.SUPABASE_HOST }}
           SUPABASE_USER:       ${{ secrets.SUPABASE_USER }}
