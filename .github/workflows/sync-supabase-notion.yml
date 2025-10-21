@@ -23,7 +23,7 @@ on:
         required: false
         default: '800'
       rate_delay:
-        description: 'Seconds between Notion writes'
+        description: 'Seconds between  writes'
         required: false
         default: '0.20'
       username_filter:
@@ -71,10 +71,10 @@ jobs:
         run: echo "hour=$(TZ=America/New_York date +%H)" >> $GITHUB_OUTPUT
 
       - id: run
-        name: Run Notion sync
+        name: Run  sync
         if: ${{ github.event_name != 'schedule' || steps.nytime.outputs.hour == '11' }}
         env:
-          NOTION_TOKEN:        ${{ secrets.NOTION_TOKEN }}
+          _TOKEN:        ${{ secrets._TOKEN }}
           NOTION_DATABASE_ID:  ${{ secrets.NOTION_DATABASE_ID }}
           SUPABASE_HOST:       ${{ secrets.SUPABASE_HOST }}
           SUPABASE_USER:       ${{ secrets.SUPABASE_USER }}
@@ -92,7 +92,7 @@ jobs:
           # Filters
           USERNAME_FILTER:     ${{ inputs.username_filter || '' }}
           IMPORT_ALL:          ${{ inputs.import_all      || 'false' }}
-        run: Rscript sync_notion.R
+        run: Rscript notion_sync_sentiment.R
 
       - name: Auto-continue next chunk
         if: ${{ steps.run.outputs.next_offset && steps.run.outputs.next_offset != 'done' }}
