@@ -3,9 +3,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Supabase (Postgres) → Notion (paged, resumable)
 # Source table: twitter_raw_plus_sentiment
-# Fields used: tweet_id, tweet_url, username, main_id, date, tweet_type,
-#              ave_sentiment, sentiment, anger, anticipation,
-#              disgust, fear, joy, sadness, surprise, trust, clean_text
+# Fields synced:
+#   Context: tweet_id, tweet_url, username, user_id, main_id, date, tweet_type
+#   NLP:     ave_sentiment, sentiment, anger, anticipation, disgust, fear,
+#            joy, sadness, surprise, trust, clean_text
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- packages ----------------------------------------------------------------
@@ -23,7 +24,7 @@ NUM_NA_AS_ZERO     <- tolower(Sys.getenv("NUM_NA_AS_ZERO","false")) %in% c("1","
 INSPECT_FIRST_ROW  <- tolower(Sys.getenv("INSPECT_FIRST_ROW","false")) %in% c("1","true","yes")
 DUMP_SCHEMA        <- tolower(Sys.getenv("DUMP_SCHEMA","false"))       %in% c("1","true","yes")
 RATE_DELAY_SEC     <- as.numeric(Sys.getenv("RATE_DELAY_SEC","0.20"))
-IMPORT_ALL         <- TRUE   # no date filter here; always read all (paged)
+IMPORT_ALL         <- TRUE   # no date filter here; always page entire table
 RUN_SMOKE_TEST     <- tolower(Sys.getenv("RUN_SMOKE_TEST","false"))    %in% c("1","true","yes")
 
 CHUNK_SIZE         <- as.integer(Sys.getenv("CHUNK_SIZE","800"))
@@ -44,6 +45,27 @@ rtxt <- function(x) {
   s <- as.character(x %||% "")
   if (identical(s, "")) list()
   else list(list(type="text", text=list(content=substr(s, 1, 1800))))
+}
+
+parse_dt <- function(x) {
+  if (inherits(x, "POSIXt")) return(as.POSIXct(x, tz="UTC"))
+  if (inherits(x, "Date"))   return(as.POSIXct(x, tz="UTC"))
+  if (inherits(x, "integer64")) x <- as.character(x)
+  if (is.numeric(x))         return(as.POSIXct(x, origin="1970-01-01", tz="UTC"))
+  if (!is.character(x))      return(as.POSIXct(NA, origin="1970-01-01", tz="UTC"))
+  xx <- trimws(x)
+  fmts <- c(
+    "%Y-%m-%dT%H:%M:%OSZ",
+    "%Y-%m-%d %H:%M:%S%z",
+    "%Y-%m-%d %H:%M:%S %z",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d"
+  )
+  for (f in fmts) {
+    d <- suppressWarnings(as.POSIXct(xx, format=f, tz="UTC"))
+    if (!is.na(d)) return(d)
+  }
+  as.POSIXct(NA, origin="1970-01-01", tz="UTC")
 }
 
 perform <- function(req, tag = "", max_tries = 6, base_sleep = 0.5) {
@@ -115,7 +137,6 @@ to_num <- function(x) {
   v
 }
 
-# Add support for URL and Date so Notion types map correctly
 set_prop <- function(name, value) {
   p <- PROPS[[name]]; if (is.null(p)) return(NULL)
   tp <- p$type
@@ -133,30 +154,25 @@ set_prop <- function(name, value) {
     u <- as.character(value %||% ""); if (!nzchar(u)) return(list(url = NULL))
     list(url = u)
   } else if (tp == "date") {
-    # Accept either POSIXct or string; normalize to ISO8601 UTC
-    d <- value
-    if (!inherits(d, "POSIXt")) {
-      # Try to parse as ISO string; if it fails, skip
-      d <- suppressWarnings(as.POSIXct(as.character(value), tz = "UTC"))
-    }
-    if (is.na(d)) return(NULL)
+    d <- parse_dt(value); if (is.na(d)) return(NULL)
     list(date = list(start = format(d, "%Y-%m-%dT%H:%M:%SZ")))
   } else NULL
 }
 
-# Include the new columns in mapping
+# map row → Notion properties
 props_from_row <- function(r) {
   pr <- list()
   # Title = tweet_id
   ttl <- as.character(r$tweet_id %||% "untitled")
   pr[[TITLE_PROP]] <- set_prop(TITLE_PROP, ttl)
 
+  # include context + sentiment fields
   wanted <- c(
     # context
-    "tweet_id","tweet_url","username","main_id","date","tweet_type",
-    # sentiment
-    "ave_sentiment","sentiment","anger","anticipation","disgust",
-    "fear","joy","sadness","surprise","trust","clean_text"
+    "tweet_id","tweet_url","username","user_id","main_id","date","tweet_type",
+    # NLP
+    "ave_sentiment","sentiment","anger","anticipation",
+    "disgust","fear","joy","sadness","surprise","trust","clean_text"
   )
   for (nm in wanted) {
     if (!is.null(PROPS[[nm]]) && !is.null(r[[nm]])) pr[[nm]] <- set_prop(nm, r[[nm]])
@@ -175,7 +191,7 @@ find_page_by_title_eq <- function(val) {
   if (length(out$results)) out$results$id[1] else NA_character_
 }
 
-# --- Minimal Notion index (by tweet_id and title) ----------------------------
+# --- Minimal Notion index (by tweet_id and by_title) -------------------------
 build_index_for_rows <- function(rows) {
   by_tid <- new.env(parent=emptyenv())
   by_ttl <- new.env(parent=emptyenv())
@@ -299,7 +315,7 @@ con <- DBI::dbConnect(
   sslmode = "require"
 )
 
-# No date filter → always read all rows, but page using LIMIT/OFFSET
+# Always page all rows (no date filter in this table)
 base_where  <- "TRUE"
 
 # Expected DISTINCT tweets
@@ -346,7 +362,7 @@ if (INSPECT_FIRST_ROW) {
       WHERE %s
     )
     SELECT
-      tweet_id, tweet_url, username, main_id, date, tweet_type,
+      tweet_id, tweet_url, username, user_id, main_id, date, tweet_type,
       ave_sentiment, sentiment, anger, anticipation,
       disgust, fear, joy, sadness, surprise, trust, clean_text
     FROM ranked
@@ -356,7 +372,7 @@ if (INSPECT_FIRST_ROW) {
   ", ORDER_DIR, base_where, ORDER_DIR, CHUNK_OFFSET)
   one <- DBI::dbGetQuery(con, test_q)
   if (nrow(one)) {
-    # print(one) # uncomment for debugging
+    # print(one)
   }
 }
 
@@ -377,7 +393,7 @@ repeat {
       WHERE %s
     )
     SELECT
-      tweet_id, tweet_url, username, main_id, date, tweet_type,
+      tweet_id, tweet_url, username, user_id, main_id, date, tweet_type,
       ave_sentiment, sentiment, anger, anticipation,
       disgust, fear, joy, sadness, surprise, trust, clean_text
     FROM ranked
@@ -398,6 +414,10 @@ repeat {
   success <- 0L
   for (i in seq_len(n)) {
     r <- rows[i, , drop = FALSE]
+    # normalize date before sending
+    if (!is.null(r$date)) {
+      d <- parse_dt(r$date); if (is.na(d)) r$date <- NULL else r$date <- d
+    }
     message(sprintf("Upserting tweet_id=%s", as.character(r$tweet_id)))
     ok <- upsert_row(r, idx = idx)
     if (ok) success <- success + 1L else message(sprintf("Row %d failed (tweet_id=%s)", i, as.character(r$tweet_id)))
@@ -430,6 +450,4 @@ message(sprintf("All pages done. Upserts ok: %d. Expected distinct under filter:
 # Tell the workflow we’re finished
 go <- Sys.getenv("GITHUB_OUTPUT")
 if (nzchar(go)) write("next_offset=done", file = go, append = TRUE)
-
-
 
