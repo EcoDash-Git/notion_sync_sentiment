@@ -2,8 +2,8 @@ name: Sync Supabase → Notion
 
 on:
   schedule:
-    - cron: "0 15 * * *"   # 11:00 in New York during EDT (UTC-4)
-    - cron: "0 16 * * *"   # 11:00 in New York during EST (UTC-5)
+    - cron: "0 3 * * *"   # 05:00 in Paris during CEST (UTC+2)
+    - cron: "0 4 * * *"   # 05:00 in Paris during CET  (UTC+1)
   workflow_dispatch:
     inputs:
       chunk_offset:
@@ -66,12 +66,13 @@ jobs:
             sudo apt-get install -y gh
           fi
 
-      - id: nytime
-        name: Get New York hour
-        run: echo "hour=$(TZ=America/New_York date +%H)" >> $GITHUB_OUTPUT
+      - id: paris
+        name: Get Europe/Paris hour
+        run: echo "hour=$(TZ=Europe/Paris date +%H)" >> $GITHUB_OUTPUT
 
       # ✅ Preflight: verify Notion credentials and DB access before running R
       - name: Preflight – Notion auth check
+        if: ${{ github.event_name != 'schedule' || steps.paris.outputs.hour == '05' }}
         run: |
           set -e
           echo "Checking /v1/databases/${NOTION_DATABASE_ID}…"
@@ -92,7 +93,7 @@ jobs:
 
       - id: run
         name: Run sync
-        if: ${{ github.event_name != 'schedule' || steps.nytime.outputs.hour == '11' }}
+        if: ${{ github.event_name != 'schedule' || steps.paris.outputs.hour == '05' }}
         env:
           NOTION_TOKEN:        ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID:  ${{ secrets.NOTION_DATABASE_ID }}
